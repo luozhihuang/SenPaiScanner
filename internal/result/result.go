@@ -37,26 +37,25 @@ func (r *Result) Loss() float64 {
 
 // Avg returns the mean of successful latency measurements.
 func (r *Result) Avg() time.Duration {
-	samples := successLatencies(r.Latencies)
-	if len(samples) == 0 {
+	var sum time.Duration
+	var count int
+	for _, l := range r.Latencies {
+		if l > 0 {
+			sum += l
+			count++
+		}
+	}
+	if count == 0 {
 		return 0
 	}
-	var sum time.Duration
-	for _, l := range samples {
-		sum += l
-	}
-	return sum / time.Duration(len(samples))
+	return sum / time.Duration(count)
 }
 
 // Min returns the best successful latency.
 func (r *Result) Min() time.Duration {
-	samples := successLatencies(r.Latencies)
-	if len(samples) == 0 {
-		return 0
-	}
-	m := samples[0]
-	for _, l := range samples[1:] {
-		if l < m {
+	var m time.Duration
+	for _, l := range r.Latencies {
+		if l > 0 && (m == 0 || l < m) {
 			m = l
 		}
 	}
@@ -65,12 +64,8 @@ func (r *Result) Min() time.Duration {
 
 // Max returns the worst successful latency.
 func (r *Result) Max() time.Duration {
-	samples := successLatencies(r.Latencies)
-	if len(samples) == 0 {
-		return 0
-	}
-	m := samples[0]
-	for _, l := range samples[1:] {
+	var m time.Duration
+	for _, l := range r.Latencies {
 		if l > m {
 			m = l
 		}
@@ -80,17 +75,24 @@ func (r *Result) Max() time.Duration {
 
 // Jitter returns the standard deviation of successful latencies.
 func (r *Result) Jitter() time.Duration {
-	samples := successLatencies(r.Latencies)
-	if len(samples) < 2 {
+	var count int
+	for _, l := range r.Latencies {
+		if l > 0 {
+			count++
+		}
+	}
+	if count < 2 {
 		return 0
 	}
 	avg := float64(r.Avg())
 	var variance float64
-	for _, l := range samples {
-		diff := float64(l) - avg
-		variance += diff * diff
+	for _, l := range r.Latencies {
+		if l > 0 {
+			diff := float64(l) - avg
+			variance += diff * diff
+		}
 	}
-	variance /= float64(len(samples))
+	variance /= float64(count)
 	return time.Duration(math.Sqrt(variance))
 }
 
@@ -181,14 +183,4 @@ func TopN(results []*Result, n int) []*Result {
 		return healthy[:n]
 	}
 	return healthy
-}
-
-func successLatencies(lat []time.Duration) []time.Duration {
-	var out []time.Duration
-	for _, l := range lat {
-		if l > 0 {
-			out = append(out, l)
-		}
-	}
-	return out
 }
