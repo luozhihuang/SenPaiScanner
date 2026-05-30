@@ -210,9 +210,11 @@ Binaries land in `dist/`.
 
 ## Contributing
 
-Issues and PRs welcome. For bigger changes, open an issue first to discuss.
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for project principles, development setup, and pull request guidelines.
 
-For bugs, include your OS/arch, the screen you were on, and what happened.
+Issues and PRs are welcome. For larger changes, open an issue first to discuss scope.
+
+For bugs, include your OS/arch, version (`senpaiscanner --version`), the screen you were on, and what you expected vs what happened.
 
 ---
 
