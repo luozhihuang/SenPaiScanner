@@ -46,9 +46,6 @@ func newLiveResultWriter(withConfig bool) (*LiveResultWriter, string, error) {
 		withConfig: withConfig,
 		phase:      1,
 	}
-	if err := w.flush(); err != nil {
-		return nil, "", err
-	}
 	return w, path, nil
 }
 
@@ -138,6 +135,11 @@ func (w *LiveResultWriter) flush() error {
 }
 
 func (w *LiveResultWriter) writeLocked() error {
+
+	if len(w.phase1Rows) == 0 {
+		return nil
+	}
+
 	var sb strings.Builder
 	sb.WriteString("SenPai Scanner — live results\n")
 	sb.WriteString(fmt.Sprintf("Started: %s\n", w.started.Format("2006-01-02 15:04:05")))
