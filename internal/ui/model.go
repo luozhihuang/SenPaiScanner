@@ -2419,12 +2419,79 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// --- When a text input is focused (row 0 or row 3) ---
+	if m.configOptionalRow == 0 || m.configOptionalRow == 3 {
+		switch msg.String() {
+		case "esc":
+			m.page = PageScanWithConfig
+			m.configInput.Blur()
+			m.configSpeedURLInput.Blur()
+			return m, nil
+
+		case "up":
+			if m.configOptionalRow > 0 {
+				m.configOptionalRow--
+				m.configInput.Blur()
+				m.configSpeedURLInput.Blur()
+				if m.configOptionalRow == 0 {
+					m.configInput.Focus()
+					return m, textinput.Blink
+				} else if m.configOptionalRow == 3 {
+					m.configSpeedURLInput.Focus()
+					return m, textinput.Blink
+				}
+			}
+			return m, nil
+
+		case "down":
+			if m.configOptionalRow < 4 {
+				m.configOptionalRow++
+				m.configInput.Blur()
+				m.configSpeedURLInput.Blur()
+				if m.configOptionalRow == 3 {
+					m.configSpeedURLInput.Focus()
+					return m, textinput.Blink
+				}
+			}
+			return m, nil
+
+		case "enter":
+			if m.configOptionalRow == 0 {
+				rawURL := strings.TrimSpace(m.configInput.Value())
+				if rawURL == "" {
+					return m.launchPhase1FromOptional()
+				}
+				m.configOptionalRow = 1
+				m.configInput.Blur()
+				return m, nil
+			}
+			if m.configOptionalRow == 3 {
+				m.configOptionalRow = 4
+				m.configSpeedURLInput.Blur()
+				return m, nil
+			}
+		}
+
+		// All other keys (runes, left/right arrow keys, backspace, etc.) go to the active text input
+		if m.configOptionalRow == 0 {
+			var cmd tea.Cmd
+			m.configInput, cmd = m.configInput.Update(msg)
+			return m, cmd
+		} else {
+			var cmd tea.Cmd
+			m.configSpeedURLInput, cmd = m.configSpeedURLInput.Update(msg)
+			return m, cmd
+		}
+	}
+
+	// --- When navigation rows (1, 2, 4) are focused ---
 	switch msg.String() {
 	case "esc":
 		m.page = PageScanWithConfig
 		m.configInput.Blur()
 		m.configSpeedURLInput.Blur()
 		return m, nil
+
 	case "up", "k":
 		if m.configOptionalRow > 0 {
 			m.configOptionalRow--
@@ -2439,6 +2506,7 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
 	case "down", "j":
 		if m.configOptionalRow < 4 {
 			m.configOptionalRow++
@@ -2450,6 +2518,7 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
 	case "left", "h":
 		switch m.configOptionalRow {
 		case 1:
@@ -2466,6 +2535,7 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
 	case "right", "l":
 		switch m.configOptionalRow {
 		case 1:
@@ -2482,21 +2552,8 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
 	case "enter":
-		if m.configOptionalRow == 0 {
-			rawURL := strings.TrimSpace(m.configInput.Value())
-			if rawURL == "" {
-				return m.launchPhase1FromOptional()
-			}
-			m.configOptionalRow = 1
-			m.configInput.Blur()
-			return m, nil
-		}
-		if m.configOptionalRow == 3 {
-			m.configOptionalRow = 4
-			m.configSpeedURLInput.Blur()
-			return m, nil
-		}
 		if m.configOptionalRow == 1 && m.isTopNCustomSelected() {
 			m.configCustomMode = true
 			m.configCustomRow = 5
@@ -2524,16 +2581,6 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.launchPhase1FromOptional()
 	}
 
-	if m.configOptionalRow == 0 {
-		var cmd tea.Cmd
-		m.configInput, cmd = m.configInput.Update(msg)
-		return m, cmd
-	}
-	if m.configOptionalRow == 3 {
-		var cmd tea.Cmd
-		m.configSpeedURLInput, cmd = m.configSpeedURLInput.Update(msg)
-		return m, cmd
-	}
 	return m, nil
 }
 
