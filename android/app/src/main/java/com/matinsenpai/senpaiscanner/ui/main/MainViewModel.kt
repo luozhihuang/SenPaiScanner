@@ -1,9 +1,12 @@
 package com.matinsenpai.senpaiscanner.ui.main
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -35,7 +38,16 @@ data class ScanConfig(
 
     // Top N
     val topNType: String = "50",
-    val customTopN: String = ""
+    val customTopN: String = "",
+
+    // New phase 2 settings
+    val requireWS: Boolean = true,
+    val minSpeedType: String = "None",
+    val customMinSpeed: String = "",
+    val speedUrl: String = "",
+    val speedSizeType: String = "512 KB (default)",
+    val customSpeedSize: String = "",
+    val uploadTest: Boolean = false
 )
 
 data class IpResult(
@@ -48,7 +60,8 @@ data class IpResult(
     val isPhase2: Boolean = false,
     val phase2Type: String = "",
     val phase2Speed: Double = 0.0,
-    val phase2Status: Boolean = false
+    val phase2Status: Boolean = false,
+    val phase2UploadSpeed: Double = 0.0
 )
 
 data class ScanUiState(
@@ -61,12 +74,28 @@ data class ScanUiState(
     val totalPhase2: Int = 0,
     val results: List<IpResult> = emptyList(),
     val error: String? = null,
-    val config: ScanConfig = ScanConfig()
+    val config: ScanConfig = ScanConfig(),
+    // ISP metadata
+    val isp: String? = null,
+    val ip: String? = null,
+    val colo: String? = null,
+    val isMetaLoading: Boolean = false
+)
+
+@Serializable
+data class MetaResponse(
+    val as_organization: String = "",
+    val ip: String = "",
+    val colo: String? = null
 )
 
 class MainViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(ScanUiState())
     val uiState: StateFlow<ScanUiState> = _uiState.asStateFlow()
+
+    init {
+        fetchUserMeta()
+    }
 
     private val scanCallback = object : Callback {
         override fun onProgress(tested: Long, healthy: Long, failed: Long, inFlight: Long, isPhase2: Boolean) {
@@ -85,8 +114,8 @@ class MainViewModel : ViewModel() {
             )
         }
 
-        override fun onResult(ip: String, port: Long, latencyMs: Long, loss: Double, colo: String, isHealthy: Boolean, isPhase2: Boolean, phase2Type: String, phase2Speed: Double, phase2Status: Boolean) {
-            val res = IpResult(ip, port.toInt(), latencyMs.toInt(), loss, colo, isHealthy, isPhase2, phase2Type, phase2Speed, phase2Status)
+        override fun onResult(ip: String, port: Long, latencyMs: Long, loss: Double, colo: String, isHealthy: Boolean, isPhase2: Boolean, phase2Type: String, phase2Speed: Double, phase2Status: Boolean, phase2UploadSpeed: Double) {
+            val res = IpResult(ip, port.toInt(), latencyMs.toInt(), loss, colo, isHealthy, isPhase2, phase2Type, phase2Speed, phase2Status, phase2UploadSpeed)
             val newList = _uiState.value.results.toMutableList()
             newList.add(0, res)
             _uiState.value = _uiState.value.copy(results = newList)
@@ -98,6 +127,28 @@ class MainViewModel : ViewModel() {
 
         override fun onError(err: String) {
             _uiState.value = _uiState.value.copy(isRunning = false, error = err)
+        }
+    }
+
+    fun fetchUserMeta() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(isMetaLoading = true)
+            try {
+                val jsonStr = Mobile.fetchMeta()
+                if (jsonStr.isNotEmpty()) {
+                    val meta = Json.decodeFromString<MetaResponse>(jsonStr)
+                    _uiState.value = _uiState.value.copy(
+                        isp = meta.as_organization,
+                        ip = meta.ip,
+                        colo = meta.colo,
+                        isMetaLoading = false
+                    )
+                } else {
+                    _uiState.value = _uiState.value.copy(isMetaLoading = false)
+                }
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(isMetaLoading = false)
+            }
         }
     }
 
