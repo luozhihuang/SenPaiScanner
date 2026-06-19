@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -165,7 +166,7 @@ fun AppUI(viewModel: MainViewModel = viewModel()) {
     ) { innerPadding ->
         Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
             if (selectedTab == 0) {
-                HomeScreen(uiState, context)
+                HomeScreen(uiState, context) { viewModel.fetchUserMeta() }
             } else {
                 SettingsScreen(uiState.config) { newConfig ->
                     viewModel.updateConfig(newConfig)
@@ -176,8 +177,91 @@ fun AppUI(viewModel: MainViewModel = viewModel()) {
 }
 
 @Composable
-fun HomeScreen(uiState: ScanUiState, context: Context) {
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+fun IspMetaCard(
+    isp: String?,
+    ip: String?,
+    colo: String?,
+    isLoading: Boolean,
+    onRefresh: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = SenPaiDarkSurface),
+        border = BorderStroke(1.dp, SenPaiOrange.copy(alpha = 0.35f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "CURRENT ISP & CONNECTION INFO",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = SenPaiOrange,
+                    letterSpacing = 0.8.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                if (isLoading) {
+                    Box(modifier = Modifier.height(22.dp), contentAlignment = Alignment.CenterStart) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = SenPaiOrange,
+                            strokeWidth = 2.dp
+                        )
+                    }
+                } else {
+                    Text(
+                        text = if (!isp.isNullOrEmpty()) isp else "Unknown ISP / Offline",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        maxLines = 1
+                    )
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val ipStr = if (!ip.isNullOrEmpty()) ip else "Unknown IP"
+                    val coloStr = if (!colo.isNullOrEmpty()) " | Colo: $colo" else ""
+                    Text(
+                        text = "IP: $ipStr$coloStr",
+                        fontSize = 11.sp,
+                        color = Color.Gray
+                    )
+                }
+            }
+            IconButton(
+                onClick = onRefresh,
+                enabled = !isLoading,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Refresh ISP Info",
+                    tint = if (isLoading) Color.Gray else SenPaiOrange
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun HomeScreen(uiState: ScanUiState, context: Context, onRefreshMeta: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        IspMetaCard(
+            isp = uiState.isp,
+            ip = uiState.ip,
+            colo = uiState.colo,
+            isLoading = uiState.isMetaLoading,
+            onRefresh = onRefreshMeta
+        )
+        Spacer(modifier = Modifier.height(4.dp))
         // Stats Cards
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             StatCard("Tested", uiState.tested.toString(), Modifier.weight(1f))
@@ -327,12 +411,21 @@ fun HomeScreen(uiState: ScanUiState, context: Context) {
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
-                            Spacer(modifier = Modifier.height(4.dp))
+                            Spacer(modifier = Modifier.height(6.dp))
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Type: ${res.phase2Type}", fontSize = 11.sp, color = Color.Gray)
-                                val speedStr = if (res.phase2Speed > 1024*1024) String.format("%.2f MB/s", res.phase2Speed / (1024*1024)) else String.format("%.0f KB/s", res.phase2Speed / 1024)
-                                Text("Speed: ${if (res.phase2Speed > 0) speedStr else "-"}", fontSize = 11.sp, color = Color.Gray)
-                                Text("Latency: ${if (res.latencyMs > 0) "${res.latencyMs}ms" else "-"}", fontSize = 11.sp, color = Color.Gray)
+                                Text("Type: ${res.phase2Type}", fontSize = 12.sp, color = Color.Gray)
+                                Text("Latency: ${if (res.latencyMs > 0) "${res.latencyMs}ms" else "-"}", fontSize = 12.sp, color = Color.Gray)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                if (res.phase2Speed > 0) {
+                                    val dlSpeedStr = if (res.phase2Speed > 1024*1024) String.format("%.2f MB/s", res.phase2Speed / (1024*1024)) else String.format("%.0f KB/s", res.phase2Speed / 1024)
+                                    Text("↓ $dlSpeedStr", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Medium)
+                                }
+                                if (res.phase2UploadSpeed > 0) {
+                                    val ulSpeedStr = if (res.phase2UploadSpeed > 1024*1024) String.format("%.2f MB/s", res.phase2UploadSpeed / (1024*1024)) else String.format("%.0f KB/s", res.phase2UploadSpeed / 1024)
+                                    Text("↑ $ulSpeedStr", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Medium)
+                                }
                             }
                         }
                     } else {
@@ -516,6 +609,24 @@ fun SettingsScreen(config: ScanConfig, onConfigChanged: (ScanConfig) -> Unit) {
             }
         }
 
+        // WebSocket
+        item {
+            SettingSection("WebSocket", "require a successful WebSocket check in Phase 1 (f4/arrows toggle)") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("WebSocket check", modifier = Modifier.clickable { onConfigChanged(config.copy(requireWS = !config.requireWS)) })
+                    Switch(
+                        checked = config.requireWS,
+                        onCheckedChange = { onConfigChanged(config.copy(requireWS = it)) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = SenPaiOrange, checkedTrackColor = SenPaiOrange.copy(alpha = 0.5f))
+                    )
+                }
+            }
+        }
+
         // 6. Top N
         item {
             SettingDropdown(
@@ -528,6 +639,64 @@ fun SettingsScreen(config: ScanConfig, onConfigChanged: (ScanConfig) -> Unit) {
                 onCustomValueChanged = { onConfigChanged(config.copy(customTopN = it)) },
                 isNumericCustom = true
             )
+        }
+
+        // Min Speed
+        item {
+            SettingDropdown(
+                label = "Min Speed",
+                description = "filter healthy IPs below threshold",
+                options = listOf("None", "1 Mbps", "2 Mbps", "5 Mbps", "Custom"),
+                selectedOption = config.minSpeedType,
+                customValue = config.customMinSpeed,
+                onOptionSelected = { onConfigChanged(config.copy(minSpeedType = it)) },
+                onCustomValueChanged = { onConfigChanged(config.copy(customMinSpeed = it)) },
+                isNumericCustom = true
+            )
+        }
+
+        // Speed URL
+        item {
+            SettingSection("Speed URL", "optional - leave empty for default speed.cloudflare.com") {
+                OutlinedTextField(
+                    value = config.speedUrl,
+                    onValueChange = { onConfigChanged(config.copy(speedUrl = it)) },
+                    label = { Text("Speed URL") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
+        // Speed Size
+        item {
+            SettingDropdown(
+                label = "Speed Size",
+                description = "download speed sample size",
+                options = listOf("128 KB", "512 KB (default)", "1 MB", "5 MB", "Custom"),
+                selectedOption = config.speedSizeType,
+                customValue = config.customSpeedSize,
+                onOptionSelected = { onConfigChanged(config.copy(speedSizeType = it)) },
+                onCustomValueChanged = { onConfigChanged(config.copy(customSpeedSize = it)) },
+                isNumericCustom = true
+            )
+        }
+
+        // Upload
+        item {
+            SettingSection("Upload", "measure upload speed in Phase 2") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Upload test", modifier = Modifier.clickable { onConfigChanged(config.copy(uploadTest = !config.uploadTest)) })
+                    Switch(
+                        checked = config.uploadTest,
+                        onCheckedChange = { onConfigChanged(config.copy(uploadTest = it)) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = SenPaiOrange, checkedTrackColor = SenPaiOrange.copy(alpha = 0.5f))
+                    )
+                }
+            }
         }
 
         item {

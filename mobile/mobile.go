@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
@@ -17,12 +19,13 @@ import (
 	"github.com/matinsenpai/senpaiscanner/internal/ipsrc"
 	"github.com/matinsenpai/senpaiscanner/internal/prober"
 	"github.com/matinsenpai/senpaiscanner/internal/result"
+	"github.com/matinsenpai/senpaiscanner/internal/ui"
 	"github.com/matinsenpai/senpaiscanner/internal/xraytest"
 )
 
 type Callback interface {
 	OnProgress(tested int, healthy int, failed int, inFlight int, isPhase2 bool)
-	OnResult(ip string, port int, latencyMs int, loss float64, colo string, isHealthy bool, isPhase2 bool, phase2Type string, phase2Speed float64, phase2Status bool)
+	OnResult(ip string, port int, latencyMs int, loss float64, colo string, isHealthy bool, isPhase2 bool, phase2Type string, phase2Speed float64, phase2Status bool, phase2UploadSpeed float64)
 	OnFinished()
 	OnError(err string)
 }
@@ -34,19 +37,26 @@ var (
 )
 
 type ScanConfig struct {
-	SourceType    string `json:"sourceType"`
-	SourceFile    string `json:"sourceFile"`
-	CountType     string `json:"countType"`
-	CustomCount   string `json:"customCount"`
-	WorkerType    string `json:"workerType"`
-	CustomWorkers string `json:"customWorkers"`
-	TimeoutType   string `json:"timeoutType"`
-	CustomTimeout string `json:"customTimeout"`
-	PortType      string `json:"portType"`
-	SelectedPorts []int  `json:"selectedPorts"`
-	ConfigURL     string `json:"configUrl"`
-	TopNType      string `json:"topNType"`
-	CustomTopN    string `json:"customTopN"`
+	SourceType      string `json:"sourceType"`
+	SourceFile      string `json:"sourceFile"`
+	CountType       string `json:"countType"`
+	CustomCount     string `json:"customCount"`
+	WorkerType      string `json:"workerType"`
+	CustomWorkers   string `json:"customWorkers"`
+	TimeoutType     string `json:"timeoutType"`
+	CustomTimeout   string `json:"customTimeout"`
+	PortType        string `json:"portType"`
+	SelectedPorts   []int  `json:"selectedPorts"`
+	ConfigURL       string `json:"configUrl"`
+	TopNType        string `json:"topNType"`
+	CustomTopN      string `json:"customTopN"`
+	RequireWS       bool   `json:"requireWS"`
+	MinSpeedType    string `json:"minSpeedType"`
+	CustomMinSpeed  string `json:"customMinSpeed"`
+	SpeedURL        string `json:"speedUrl"`
+	SpeedSizeType   string `json:"speedSizeType"`
+	CustomSpeedSize string `json:"customSpeedSize"`
+	UploadTest      bool   `json:"uploadTest"`
 }
 
 func StartScan(configJson string, callback Callback) {
@@ -183,6 +193,7 @@ func runScan(configJson string, callback Callback) {
 		if xCfg.Network == "ws" {
 			probeCfg.WebSocketHost = xCfg.Host
 			probeCfg.WebSocketPath = xCfg.Path
+			probeCfg.RequireWebSocket = cfg.RequireWS
 		}
 		ports = []int{xCfg.Port}
 	} else {
@@ -191,11 +202,12 @@ func runScan(configJson string, callback Callback) {
 			ports = []int{443}
 		}
 		probeCfg = prober.Config{
-			Mode:               prober.ModeHTTP,
-			Tries:              3,
-			Timeout:            timeout,
-			SNI:                "speed.cloudflare.com",
-			InsecureSkipVerify: true,
+			Mode:             prober.ModeHTTP,
+			Tries:            3,
+			Timeout:          timeout,
+			SNI:              "speed.cloudflare.com",
+			SpeedBytes:       64 * 1024,
+			RequireWebSocket: true,
 		}
 	}
 
@@ -229,9 +241,8 @@ func runScan(configJson string, callback Callback) {
 			}
 			return
 		}
-		srcCtx, srcCancel := context.WithCancel(context.Background())
-		defer srcCancel()
-		ipStream = src.Stream(srcCtx, count)
+		ctx, _ := context.WithCancel(context.Background())
+		ipStream = src.Stream(ctx, count)
 		neighborNets = src.IPv4Nets()
 	}
 
@@ -397,7 +408,7 @@ func runScan(configJson string, callback Callback) {
 				phase1Results = append(phase1Results, r)
 				resMu.Unlock()
 				if callback != nil {
-					callback.OnResult(r.IP.String(), r.Port, int(r.Avg().Milliseconds()), r.Loss(), r.Colo, true, false, "", 0.0, false)
+					callback.OnResult(r.IP.String(), r.Port, int(r.Avg().Milliseconds()), r.Loss(), r.Colo, true, false, "", 0.0, false, 0.0)
 				}
 			}
 			maybeEnqueueNeighbors(r)
@@ -406,7 +417,7 @@ func runScan(configJson string, callback Callback) {
 	close(jobs)
 	wg.Wait()
 	close(results)
-
+	
 	// Drain remaining results
 	for r := range results {
 		pending--
@@ -425,7 +436,7 @@ func runScan(configJson string, callback Callback) {
 			phase1Results = append(phase1Results, r)
 			resMu.Unlock()
 			if callback != nil {
-				callback.OnResult(r.IP.String(), r.Port, int(r.Avg().Milliseconds()), r.Loss(), r.Colo, true, false, "", 0.0, false)
+				callback.OnResult(r.IP.String(), r.Port, int(r.Avg().Milliseconds()), r.Loss(), r.Colo, true, false, "", 0.0, false, 0.0)
 			}
 		}
 	}
@@ -475,6 +486,37 @@ phase1Done:
 			return
 		}
 
+		// Resolve Min Speed
+		var minSpeed float64
+		if cfg.MinSpeedType == "Custom" {
+			minSpeed, _ = strconv.ParseFloat(strings.TrimSpace(cfg.CustomMinSpeed), 64)
+		} else if strings.HasSuffix(cfg.MinSpeedType, "Mbps") {
+			parts := strings.Split(cfg.MinSpeedType, " ")
+			if len(parts) > 0 {
+				minSpeed, _ = strconv.ParseFloat(parts[0], 64)
+			}
+		}
+
+		// Resolve Speed Size
+		var speedSize int64 = 512 * 1024 // default
+		if cfg.SpeedSizeType == "Custom" {
+			n, _ := strconv.ParseInt(strings.TrimSpace(cfg.CustomSpeedSize), 10, 64)
+			if n > 0 {
+				speedSize = n * 1024 * 1024 // Custom input is in MB
+			}
+		} else if cfg.SpeedSizeType == "128 KB" {
+			speedSize = 128 * 1024
+		} else if cfg.SpeedSizeType == "512 KB (default)" || cfg.SpeedSizeType == "512 KB" {
+			speedSize = 512 * 1024
+		} else if cfg.SpeedSizeType == "1 MB" {
+			speedSize = 1024 * 1024
+		} else if cfg.SpeedSizeType == "5 MB" {
+			speedSize = 5 * 1024 * 1024
+		}
+
+		speedURL := cfg.SpeedURL
+		uploadTest := cfg.UploadTest
+
 		atomic.StoreInt32(&statsTested, 0)
 		atomic.StoreInt32(&statsHealthy, 0)
 		atomic.StoreInt32(&statsFailed, 0)
@@ -483,13 +525,14 @@ phase1Done:
 
 		// Create buffered channel for Phase 2 results
 		type phase2ResultMsg struct {
-			ip         string
-			port       int
-			latencyMs  int
-			colo       string
-			transport  string
-			throughput float64
-			success    bool
+			ip               string
+			port             int
+			latencyMs        int
+			colo             string
+			transport        string
+			throughput       float64
+			uploadThroughput float64
+			success          bool
 		}
 		phase2ResultChan := make(chan phase2ResultMsg, len(phase1Results))
 
@@ -508,13 +551,13 @@ phase1Done:
 						return
 					}
 					if callback != nil {
-						callback.OnResult(msg.ip, msg.port, msg.latencyMs, 0.0, msg.colo, true, true, msg.transport, msg.throughput, msg.success)
+						callback.OnResult(msg.ip, msg.port, msg.latencyMs, 0.0, msg.colo, true, true, msg.transport, msg.throughput, msg.success, msg.uploadThroughput)
 					}
 				case <-ctx.Done():
 					// Context cancelled, drain remaining messages and exit
 					for msg := range phase2ResultChan {
 						if callback != nil {
-							callback.OnResult(msg.ip, msg.port, msg.latencyMs, 0.0, msg.colo, true, true, msg.transport, msg.throughput, msg.success)
+							callback.OnResult(msg.ip, msg.port, msg.latencyMs, 0.0, msg.colo, true, true, msg.transport, msg.throughput, msg.success, msg.uploadThroughput)
 						}
 					}
 					return
@@ -528,7 +571,18 @@ phase1Done:
 				break
 			}
 			swapped := xCfg.WithEndpoint(r.IP.String(), r.Port)
-			vr := mobileValidateConfig(ctx, swapped, 22*time.Second)
+			swapped.SpeedURL = speedURL
+			swapped.SpeedSize = speedSize
+			swapped.UploadTest = uploadTest
+
+			vr := mobileValidateConfig(ctx, swapped, 20*time.Second)
+			if vr.Success && minSpeed > 0 {
+				mbps := vr.Throughput * 8 / 1_000_000
+				if mbps < minSpeed {
+					vr.Success = false
+					vr.Error = fmt.Sprintf("speed below threshold (%.1f < %.1f Mbps)", mbps, minSpeed)
+				}
+			}
 
 			atomic.AddInt32(&statsTested, 1)
 			atomic.AddInt32(&statsInFlight, -1)
@@ -541,13 +595,14 @@ phase1Done:
 			// Send result to callback goroutine instead of calling callback directly
 			select {
 			case phase2ResultChan <- phase2ResultMsg{
-				ip:         r.IP.String(),
-				port:       r.Port,
-				latencyMs:  int(vr.Latency.Milliseconds()),
-				colo:       r.Colo,
-				transport:  vr.Transport,
-				throughput: vr.Throughput,
-				success:    vr.Success,
+				ip:               r.IP.String(),
+				port:             r.Port,
+				latencyMs:        int(vr.Latency.Milliseconds()),
+				colo:             r.Colo,
+				transport:        vr.Transport,
+				throughput:       vr.Throughput,
+				uploadThroughput: vr.UploadThroughput,
+				success:          vr.Success,
 			}:
 			case <-ctx.Done():
 				break
@@ -569,4 +624,77 @@ phase1Done:
 		// Wait for callback goroutine to finish processing all results before OnFinished
 		callbackWg.Wait()
 	}
+}
+
+// FetchMeta fetches the user's current ISP and IP information using the same
+// logic as the desktop TUI version (cloudflare meta, falling back to ip-api.com or ip.dnslab.link).
+// It returns a JSON string containing {"as_organization": "...", "ip": "...", "colo": "..."}.
+func FetchMeta() string {
+	client := http.Client{Timeout: 5 * time.Second}
+
+	type MetaMsg struct {
+		ASOrganization string `json:"as_organization"`
+		IP             string `json:"ip"`
+		Colo           string `json:"colo,omitempty"`
+	}
+
+	// Try Cloudflare first
+	resp, err := client.Get("https://speed.cloudflare.com/meta")
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			var m MetaMsg
+			if err := json.NewDecoder(resp.Body).Decode(&m); err == nil && m.ASOrganization != "" {
+				resBytes, _ := json.Marshal(m)
+				return string(resBytes)
+			}
+		}
+	}
+
+	// Fallback 1: ip-api.com
+	resp2, err2 := client.Get("http://ip-api.com/json")
+	if err2 == nil {
+		defer resp2.Body.Close()
+		if resp2.StatusCode >= 200 && resp2.StatusCode < 300 {
+			var raw struct {
+				ISP string `json:"isp"`
+				AS  string `json:"as"`
+				IP  string `json:"query"`
+			}
+			if err := json.NewDecoder(resp2.Body).Decode(&raw); err == nil && raw.ISP != "" {
+				m := MetaMsg{
+					ASOrganization: raw.ISP,
+					IP:             raw.IP,
+				}
+				resBytes, _ := json.Marshal(m)
+				return string(resBytes)
+			}
+		}
+	}
+
+	// Fallback 2: ip.dnslab.link
+	resp3, err3 := client.Get("http://ip.dnslab.link")
+	if err3 == nil {
+		defer resp3.Body.Close()
+		if resp3.StatusCode >= 200 && resp3.StatusCode < 300 {
+			bodyBytes, err := io.ReadAll(io.LimitReader(resp3.Body, 64))
+			if err == nil {
+				ipStr := strings.TrimSpace(string(bodyBytes))
+				if net.ParseIP(ipStr) != nil {
+					ispName, found := ui.LookupIranISP(ipStr)
+					if !found {
+						ispName = "Iranian ISP"
+					}
+					m := MetaMsg{
+						ASOrganization: ispName,
+						IP:             ipStr,
+					}
+					resBytes, _ := json.Marshal(m)
+					return string(resBytes)
+				}
+			}
+		}
+	}
+
+	return ""
 }
